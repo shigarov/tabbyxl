@@ -16,27 +16,20 @@
 
 package ru.icc.td.tabbyxl;
 
-import org.antlr.runtime.RecognitionException;
 import org.apache.commons.cli.*;
 import org.apache.commons.io.FilenameUtils;
-import ru.icc.td.tabbyxl.crl2j.CRL2JEngine;
+import ru.icc.td.tabbyxl.mips.MIPS;
 import ru.icc.td.tabbyxl.model.*;
-import ru.icc.td.tabbyxl.preprocessing.ner.NERecogPreprocessor;
 import ru.icc.td.tabbyxl.util.StatisticsManager;
 import ru.icc.td.tabbyxl.writers.TableWriter;
 import ru.icc.td.tabbyxl.writers.DebugTableWriter;
 import ru.icc.td.tabbyxl.writers.EvaluationTableWriter;
 
-import javax.rules.*;
-import javax.rules.admin.LocalRuleExecutionSetProvider;
-import javax.rules.admin.RuleAdministrator;
-import javax.rules.admin.RuleExecutionSet;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.rmi.RemoteException;
 import java.sql.Timestamp;
 import java.util.*;
 import java.util.function.Consumer;
@@ -47,24 +40,17 @@ public final class TabbyXL {
     // Params
 
     private static File inputExcelFile;
-    private static List<Integer> sheetIndexes;
-    private static File rulesetFile;
-    private static Path catDirectory;
+    private static Path outputDirectory;
     private static boolean ignoreSuperscript;
     private static boolean useCellValue;
-    private static Path outputDirectory;
+    private static List<Integer> sheetIndexes;
     private static boolean debuggingMode;
     private static boolean useShortNames;
-    private static boolean useRuleEngine;
-    private static File ruleEngineConfigFile;
-    private static String executingOptionName;
-    private static boolean useNer;
 
     // Statistics
 
     private static final StatisticsManager statisticsManager = StatisticsManager.getInstance();
 
-    private static long rulesetPreparationTime;
     private static long totalRulesetExecutionTime;
     private static long currentRulesetExecutionTime;
 
@@ -127,40 +113,6 @@ public final class TabbyXL {
         return null;
     }
 
-    private static File parseRulesetFileParam(String rulesetFileParam) {
-        File file = new File(rulesetFileParam);
-        if (file.exists()) {
-            if (file.canRead()) {
-                // Note that to need to set <code>useRuleEngine</code> before parsing rule file param
-                if (!useRuleEngine) {
-                    String fileExtension = FilenameUtils.getExtension(file.getName());
-                    if (!fileExtension.equalsIgnoreCase("crl")) {
-                        System.err.println("The extension of the ruleset file is not .crl");
-                    }
-                }
-                return file;
-            } else {
-                System.err.println("The knowledge base file cannot be read");
-                System.exit(0);
-            }
-        } else {
-            System.err.println("The knowledge base file does not exist");
-            System.exit(0);
-        }
-        return null;
-    }
-
-    private static Path parseCatDirectoryParam(String catDirectoryParam) {
-        if (null != catDirectoryParam) {
-            try {
-                return Paths.get(catDirectoryParam);
-            } catch (InvalidPathException e) {
-                System.err.println("The cat directory path is invalid");
-                e.printStackTrace();
-            }
-        }
-        return null;
-    }
 
     private static Path parseOutputDirectoryParam(String outputDirectoryParam) {
         if (null != outputDirectoryParam) {
@@ -217,37 +169,6 @@ public final class TabbyXL {
         return false;
     }
 
-    private static boolean parseRuleEngineConfigFileParam(String ruleEngineConfigFileParam) {
-        if (null != ruleEngineConfigFileParam) {
-            File file = new File(ruleEngineConfigFileParam);
-
-            if (file.exists()) {
-                if (file.canRead()) {
-                    String fileExtension = FilenameUtils.getExtension(file.getName());
-                    if (!fileExtension.equalsIgnoreCase("properties")) {
-                        System.err.println("The extension of the rule engine config file is not .properties");
-                    }
-                    ruleEngineConfigFile = file;
-                    return true;
-                } else {
-                    System.err.println("The rule engine config file cannot be read");
-                    System.exit(0);
-                }
-            } else {
-                System.err.println("The rule engine config file does not exist");
-                System.exit(0);
-            }
-        }
-        return false;
-    }
-
-    private static boolean parseUseNerParam(String useNerParam) {
-        if (null != useNerParam) {
-            return Boolean.valueOf(useNerParam);
-        }
-        return false;
-    }
-
     private static String traceParsedParams() {
         StringBuilder sb = new StringBuilder();
         sb.append("Command line parameters:\r\n");
@@ -269,15 +190,11 @@ public final class TabbyXL {
                 sb.append(indent).append("Sheets in processing: ALL\n");
             }
 
-            if (null != catDirectory)
-                sb.append(indent).append(String.format("Category directory: \"%s\"%n", catDirectory.toRealPath()));
-
             sb.append(indent).append(String.format("Ignoring superscript text: %b%n", ignoreSuperscript));
             sb.append(indent).append(String.format("Using cell values as text: %b%n", useCellValue));
             sb.append(indent).append(String.format("Using short names: \"%s\"%n", useShortNames));
             sb.append(indent).append(String.format("Output directory: \"%s\"%n", outputDirectory.toRealPath()));
             sb.append(indent).append(String.format("Debugging mode: %b%n", debuggingMode));
-            sb.append(indent).append(String.format("Using a rule engine: %b", useRuleEngine));
 
         } catch (IOException e) {
             e.printStackTrace();
@@ -411,16 +328,6 @@ public final class TabbyXL {
             String sheetIndexesParam = cmd.getOptionValue(sheetIndexesOpt.getOpt());
             sheetIndexes = parseSheetIndexesParam(sheetIndexesParam);
 
-            // Note that to need to set <code>useRuleEngine</code> before parsing rule file param
-            String ruleEngineConfigFileParam = cmd.getOptionValue(ruleEngineConfigOpt.getOpt());
-            useRuleEngine = parseRuleEngineConfigFileParam(ruleEngineConfigFileParam);
-
-            String rulesetFileParam = cmd.getOptionValue(rulesetFileOpt.getOpt());
-            rulesetFile = parseRulesetFileParam(rulesetFileParam);
-
-            String catDirectoryParam = cmd.getOptionValue(catDirectoryOpt.getOpt());
-            catDirectory = parseCatDirectoryParam(catDirectoryParam);
-
             String outputDirectoryParam = cmd.getOptionValue(outputDirectoryOpt.getOpt());
             outputDirectory = parseOutputDirectoryParam(outputDirectoryParam);
 
@@ -435,9 +342,6 @@ public final class TabbyXL {
 
             String debuggingModeParam = cmd.getOptionValue(debuggingModeOpt.getOpt());
             debuggingMode = parseDebuggingModeParam(debuggingModeParam);
-
-            String useNerParam = cmd.getOptionValue(useNerOpt.getOpt());
-            useNer = parseUseNerParam(useNerParam);
 
         } catch (ParseException e) {
             e.printStackTrace();
@@ -462,33 +366,6 @@ public final class TabbyXL {
         }
     }
 
-    private static void loadCatFiles() {
-        if (null != catDirectory) {
-            File folder = catDirectory.toFile();
-            try {
-                for (File file : folder.listFiles()) {
-                    if (file.isFile()) {
-                        if (file.exists()) {
-                            if (file.canRead()) {
-                                // TODO: Add checking file extension: it must be *.cat
-                                System.out.println(file.getName());
-                                categoryTemplateManager.load(file);
-                            } else {
-                                System.out.printf("The file cannot be read: \"%s\"%n", file);
-                                System.exit(0);
-                            }
-                        } else {
-                            System.out.printf("The file is not exists: \"%s\"%n", file);
-                            System.exit(0);
-                        }
-                    }
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
     public static void start(String[] args) {
         main(args);
     }
@@ -509,27 +386,23 @@ public final class TabbyXL {
             dataLoader.setUseCellValue(useCellValue);
 
             // Load data
-
             loadWorkbook();
-            loadCatFiles();
 
             if (Files.notExists(outputDirectory)) Files.createDirectory(outputDirectory);
 
             // Process data
-
-            if (useRuleEngine)
-                runWithRuleEngine();
-            else
-                runWithCRL2J();
-
-        } catch (IOException | ReflectiveOperationException | RuleException | RecognitionException e) {
+            runWithMIPS();
+        } catch (IOException e) {
             e.printStackTrace();
-        } finally {
+        /*
+        } catch (ReflectiveOperationException | RuleException | RecognitionException e) {
+            e.printStackTrace();
+        }
+        */
+    } finally {
             endTime = new Date().getTime();
             System.out.println(statisticsManager.trace());
 
-            System.out.printf(String.format("\tUsed option: %s%n", executingOptionName));
-            System.out.printf("\tRuleset preparation time: %s ms%n", rulesetPreparationTime);
             System.out.printf("\tRuleset execution time (total for all tables): %s ms%n", totalRulesetExecutionTime);
             System.out.printf("\tTotal time: %s ms%n", endTime - startTime);
             System.out.println();
@@ -538,91 +411,17 @@ public final class TabbyXL {
         }
     }
 
-    private static RuleSession getRuleSession(Properties ruleEngineConfig) throws IOException, ClassNotFoundException, RuleException {
 
-        Class.forName(ruleEngineConfig.getProperty("RULE_SERVICE_PROVIDER_IMPL"));
-        RuleServiceProvider ruleServiceProvider = RuleServiceProviderManager.getRuleServiceProvider(ruleEngineConfig.getProperty("RULE_SERVICE_PROVIDER"));
-        RuleAdministrator ruleAdministrator = ruleServiceProvider.getRuleAdministrator();
-        LocalRuleExecutionSetProvider ruleExecutionSetProvider = ruleAdministrator.getLocalRuleExecutionSetProvider(null);
+    private static void runWithMIPS() throws IOException {
+        final MIPS mips = new MIPS();
 
-        Reader rulesetFileReader = new InputStreamReader(new FileInputStream(rulesetFile));
-
-        Map properties = new HashMap();
-        properties.put("source", ruleEngineConfig.getProperty("SOURCE"));
-
-        if (null != ruleEngineConfig.getProperty("DSL")) {
-            properties.put("dsl", new InputStreamReader(new FileInputStream(ruleEngineConfig.getProperty("DSL"))));
-        }
-
-        RuleExecutionSet ruleExecutionSet = ruleExecutionSetProvider.createRuleExecutionSet(rulesetFileReader, properties);
-        RuleRuntime ruleRuntime = ruleServiceProvider.getRuleRuntime();
-        ruleAdministrator.registerRuleExecutionSet(ruleExecutionSet.getName(), ruleExecutionSet, null);
-
-        rulesetFileReader.close();
-
-        return ruleRuntime.createRuleSession(ruleExecutionSet.getName(), null, RuleRuntime.STATEFUL_SESSION_TYPE);
-    }
-
-    private static void runWithRuleEngine() throws IOException, ClassNotFoundException, RuleException {
-        System.out.println("Rule preparing is in progress");
-        System.out.println();
-
-        final Date startTime = new Date();
-
-        Properties ruleEngineConfig = new Properties();
-        ruleEngineConfig.load(new FileReader(ruleEngineConfigFile));
-        executingOptionName = ruleEngineConfig.getProperty("RULE_SERVICE_PROVIDER");
-        StatefulRuleSession session = (StatefulRuleSession) getRuleSession(ruleEngineConfig);
-
-        final Date endTime = new Date();
-        rulesetPreparationTime = endTime.getTime() - startTime.getTime();
-
-        System.out.println();
-        System.out.println("Rule preparing is completed successfully");
         System.out.println();
         System.out.println("Table processing is in progress");
         System.out.println();
 
-        Consumer<CTable> ruleEngineOption = (table) -> {
-            try {
-                session.addObjects(table.getCellList());
-                session.addObjects(table.getLocalCategoryBox().getCategoryList());
-                session.executeRules();
-                session.reset();
-            } catch (RemoteException | InvalidRuleSessionException e) {
-                e.printStackTrace();
-            }
-        };
+        Consumer<CTable> mipsOption = (table) -> {mips.processTable(table);};
 
-        processTables(ruleEngineOption);
-
-        System.out.println();
-        System.out.println("Table processing is completed successfully");
-        System.out.println();
-    }
-
-    private static void runWithCRL2J() throws IOException, RecognitionException {
-        System.out.println("Rule preparing is in progress");
-        System.out.println();
-
-        final Date startTime = new Date();
-
-        executingOptionName = "CRL2JEngine";
-        final CRL2JEngine crl2jEngine = new CRL2JEngine();
-        crl2jEngine.loadRules(rulesetFile);
-
-        final Date endTime = new Date();
-        rulesetPreparationTime = endTime.getTime() - startTime.getTime();
-
-        System.out.println();
-        System.out.println("Rule preparing is completed successfully");
-        System.out.println();
-        System.out.println("Table processing is in progress");
-        System.out.println();
-
-        Consumer<CTable> crl2jOption = (table) -> {crl2jEngine.processTable(table);};
-
-        processTables(crl2jOption);
+        processTables(mipsOption);
 
         System.out.println();
         System.out.println("Table processing is completed successfully");
@@ -647,11 +446,6 @@ public final class TabbyXL {
 
                 if (categoryTemplateManager.hasAtLeastOneCategoryTemplate())
                     categoryTemplateManager.createCategories(table);
-
-                // Assign a NER tag to each cell of the table
-                if (useNer) {
-                    ner.process(table);
-                }
 
                 Date startDate = new Date();
                 executionOption.accept(table);
@@ -702,8 +496,6 @@ public final class TabbyXL {
             }
         }
     }
-
-    private static final NERecogPreprocessor ner = new NERecogPreprocessor(false);
 
     private TabbyXL() {
     }
